@@ -6,7 +6,8 @@ from tkinter import filedialog, simpledialog
 from typing import Dict, List, Optional
 
 import customtkinter as ctk
-
+import pystray
+from PIL import Image, ImageDraw
 from pyatv.const import DeviceState
 
 from services.airplay import AirPlaySession, PinRequired
@@ -25,11 +26,19 @@ def _fmt_time(seconds: int) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
+def _make_tray_image() -> Image.Image:
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.ellipse([2, 2, 62, 62], fill=(26, 115, 232, 255))
+    draw.polygon([(20, 16), (20, 48), (52, 32)], fill=(255, 255, 255, 255))
+    return img
+
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Win-AirPlay")
-        self.geometry("520x370")
+        self.geometry("520x420")
         self.resizable(False, False)
 
         self._devices: List[Dict[str, str]] = []
@@ -42,11 +51,17 @@ class App(ctk.CTk):
         self._updating_slider = False
         self._duration = 0
         self._poll_task = None
+        self._mirror_mode = False
+        self._tray: Optional[pystray.Icon] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
         self._build_ui()
         self._start_bg_loop()
+        self._setup_tray()
         self._schedule_scan()
+
+        # Hide to tray on window close instead of quitting
+        self.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -85,15 +100,30 @@ class App(ctk.CTk):
         )
         self._file_label.pack(side="left", padx=(0, 8))
 
-        ctk.CTkButton(file_frame, text="Browse", width=70, command=self._pick_file).pack(
-            side="left"
+        self._browse_btn = ctk.CTkButton(
+            file_frame, text="Browse", width=70, command=self._pick_file
         )
+        self._browse_btn.pack(side="left")
+
+        # Mirror switch row
+        mirror_frame = ctk.CTkFrame(self, fg_color="transparent")
+        mirror_frame.pack(fill="x", padx=16, pady=(0, 4))
+
+        ctk.CTkLabel(mirror_frame, text="", width=90).pack(side="left")  # alignment spacer
+
+        self._mirror_switch = ctk.CTkSwitch(
+            mirror_frame,
+            text="Mirror screen  (streams your desktop to Apple TV)",
+            command=self._on_mirror_toggle,
+            onvalue=True,
+            offvalue=False,
+        )
+        self._mirror_switch.pack(side="left")
 
         # Transport controls: Play | Pause | Stop
         ctrl_frame = ctk.CTkFrame(self, fg_color="transparent")
         ctrl_frame.pack(fill="x", **pad)
 
-        # Left-pad to visually center the three 110px buttons inside the 488px inner width
         self._play_btn = ctk.CTkButton(
             ctrl_frame, text="▶  Play", width=110, command=self._on_play, state="disabled"
         )
@@ -148,6 +178,33 @@ class App(ctk.CTk):
         ).pack(fill="x", padx=16, pady=(4, 12))
 
     # ------------------------------------------------------------------
+    # System tray
+    # ------------------------------------------------------------------
+
+    def _setup_tray(self):
+        menu = pystray.Menu(
+            pystray.MenuItem("Show", self._tray_show, default=True),
+            pystray.MenuItem("Stop Playback", self._tray_stop),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Quit", self._tray_quit),
+        )
+        self._tray = pystray.Icon("Win-AirPlay", _make_tray_image(), "Win-AirPlay", menu)
+        threading.Thread(target=self._tray.run, daemon=True).start()
+
+    def _hide_to_tray(self):
+        self.withdraw()
+
+    def _tray_show(self, _icon, _item):
+        self.after(0, self.deiconify)
+
+    def _tray_stop(self, _icon, _item):
+        self.after(0, self._on_stop)
+
+    def _tray_quit(self, _icon, _item):
+        self._tray.stop()
+        self.after(0, self.destroy)
+
+    # ------------------------------------------------------------------
     # Background asyncio loop
     # ------------------------------------------------------------------
 
@@ -189,7 +246,7 @@ class App(ctk.CTk):
         self._refresh_play_state()
 
     # ------------------------------------------------------------------
-    # File picker
+    # File picker & mirror toggle
     # ------------------------------------------------------------------
 
     def _pick_file(self):
@@ -206,20 +263,35 @@ class App(ctk.CTk):
             self._file_label.configure(text=short)
             self._refresh_play_state()
 
+    def _on_mirror_toggle(self):
+        self._mirror_mode = self._mirror_switch.get()
+        if self._mirror_mode:
+            self._browse_btn.configure(state="disabled")
+            self._file_label.configure(text="Desktop — screen capture")
+        else:
+            self._browse_btn.configure(state="normal")
+            label = self._selected_video or "No file selected"
+            if self._selected_video and len(self._selected_video) > 45:
+                label = "…" + self._selected_video[-44:]
+            self._file_label.configure(text=label)
+        self._refresh_play_state()
+
     # ------------------------------------------------------------------
     # Transport controls
     # ------------------------------------------------------------------
 
     def _refresh_play_state(self):
-        ready = (
-            self._selected_video
-            and self._devices
+        source_ready = self._mirror_mode or bool(self._selected_video)
+        device_ready = (
+            bool(self._devices)
             and self._device_var.get() not in ("Scanning…", "No devices found")
         )
+        ready = source_ready and device_ready
         self._play_btn.configure(state="normal" if ready and not self._playing else "disabled")
         self._pause_btn.configure(state="normal" if self._playing else "disabled")
         self._stop_btn.configure(state="normal" if self._playing else "disabled")
         self._seek_bar.configure(state="normal" if self._playing else "disabled")
+        self._mirror_switch.configure(state="disabled" if self._playing else "normal")
 
     def _on_play(self):
         device = self._selected_device()
@@ -229,12 +301,16 @@ class App(ctk.CTk):
         self._paused = False
         self._refresh_play_state()
         self._set_status("Starting transcoder…")
-        self._run_async(self._play_pipeline(device, self._selected_video))
+        self._run_async(self._play_pipeline(device))
 
-    async def _play_pipeline(self, device: Dict[str, str], video_path: str):
+    async def _play_pipeline(self, device: Dict[str, str]):
         try:
-            self.after(0, self._set_status, "Transcoding & starting HTTP server…")
-            url = await self._streamer.start(video_path)
+            if self._mirror_mode:
+                self.after(0, self._set_status, "Starting screen capture…")
+                url = await self._streamer.start_mirror()
+            else:
+                self.after(0, self._set_status, "Transcoding & starting HTTP server…")
+                url = await self._streamer.start(self._selected_video)
 
             self.after(0, self._set_status, f"Connecting to {device['name']}…")
 
@@ -257,7 +333,9 @@ class App(ctk.CTk):
                 return
 
             await self._session.stream(url)
-            self.after(0, self._set_status, f"Streaming to {device['name']}…")
+
+            label = "Mirroring screen" if self._mirror_mode else f"Streaming to {device['name']}"
+            self.after(0, self._set_status, f"{label}…")
 
             self._session.start_push_updates(
                 lambda ds, pos, dur: self.after(0, self._on_device_state, ds, pos, dur)
@@ -334,7 +412,6 @@ class App(ctk.CTk):
             self._seeking = False
 
     def _on_seek_drag(self, value: float):
-        # Update the time label while dragging without seeking yet
         if self._updating_slider or self._duration == 0:
             return
         pos = int(value * self._duration)

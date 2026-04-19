@@ -14,7 +14,9 @@ Pick a file, pick a device, hit Play — ffmpeg transcodes on the fly while a lo
 - Handles first-run AirPlay pairing with a PIN dialog
 - Play, Pause/Resume, and Stop controls in the app
 - Seek bar with live time display; drag to jump to any position
-- GUI stays in sync when you use the Apple TV remote, Siri, or Control Centre — pause, resume, and stop events all reflect immediately
+- GUI stays in sync when you use the Apple TV remote, Siri, or Control Centre
+- **Screen mirroring** — toggle a switch to stream your Windows desktop live to Apple TV
+- **System tray** — closing the window hides to tray; right-click the tray icon to Show, Stop, or Quit
 - Clean stop: kills the transcoder, shuts down the HTTP server, and removes temp files
 
 ---
@@ -60,6 +62,20 @@ Changes made from the Apple TV remote, Siri, or Control Centre are reflected in 
 
 Use **Rescan** at any time to refresh the device list.
 
+### Screen mirroring
+
+Toggle the **Mirror screen** switch before hitting Play. The app captures your Windows desktop via ffmpeg and streams it live to Apple TV. The file picker is disabled in this mode. Note: seek and position tracking are not available during a live mirror session.
+
+### System tray
+
+Clicking the window's close button hides the app to the system tray rather than quitting. Right-click the tray icon for options:
+
+| Option | Action |
+|---|---|
+| Show | Restore the window |
+| Stop Playback | Stop the current stream |
+| Quit | Stop playback and exit |
+
 ---
 
 ## How it works
@@ -84,7 +100,7 @@ ffmpeg  ──►  HLS segments (.ts) + playlist (.m3u8)  in a temp dir
 | `services/discovery.py` | Async mDNS scan via `pyatv.scan()` |
 | `services/streamer.py` | Spawns ffmpeg, waits for first segment, serves HLS over HTTP |
 | `services/airplay.py` | `AirPlaySession` — persistent pyatv connection with pause, resume, seek, and push update listener |
-| `gui/app.py` | customtkinter UI with seek bar; syncs with Apple TV via push callbacks |
+| `gui/app.py` | customtkinter UI with seek bar, mirror switch, and system tray |
 | `scripts/get_ffmpeg.py` | Downloads ffmpeg on first run |
 
 ---
@@ -125,7 +141,12 @@ The output is `dist/WinAirPlay.exe` — no separate ffmpeg install needed on the
 - Push updates require an active AirPlay connection. If the device dropped the connection, stop and restart playback.
 
 **Buffering / poor quality**
-- The default preset is `veryfast`; adjust `-preset` in `services/streamer.py` for a quality/speed tradeoff.
+- For file playback, the default preset is `veryfast`; adjust `-preset` in `services/streamer.py` for a quality/speed tradeoff.
+- Screen mirroring uses `ultrafast` + `zerolatency` and 2-second HLS segments; expect 4–8 seconds of end-to-end latency.
+
+**Screen mirroring not working**
+- `gdigrab` is Windows-only. On macOS use `-f avfoundation`, on Linux use `-f x11grab`.
+- Make sure no DRM or hardware overlay is blocking capture (e.g. some video players render to a protected surface).
 
 ---
 

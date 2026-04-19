@@ -35,6 +35,17 @@ class HLSStreamer:
         local_ip = self._local_ip()
         return f"http://{local_ip}:{self._port}/stream.m3u8"
 
+    async def start_mirror(self, framerate: int = 30) -> str:
+        """Capture the Windows desktop and serve as HLS. Returns stream URL."""
+        self._tmpdir = tempfile.mkdtemp(prefix="airplay_hls_")
+        self._port = self._free_port()
+
+        self._start_ffmpeg_mirror(framerate)
+        await self._wait_for_playlist()
+        await self._start_http_server()
+
+        return f"http://{self._local_ip()}:{self._port}/stream.m3u8"
+
     async def stop(self):
         """Kill ffmpeg, stop HTTP server, and clean up temp files."""
         if self._ffmpeg_proc and self._ffmpeg_proc.poll() is None:
@@ -87,6 +98,38 @@ class HLSStreamer:
             # HLS muxer
             "-f", "hls",
             "-hls_time", "4",
+            "-hls_list_size", "0",
+            "-hls_flags", "independent_segments",
+            "-hls_segment_filename", segment,
+            playlist,
+        ]
+
+        self._ffmpeg_proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def _start_ffmpeg_mirror(self, framerate: int):
+        playlist = os.path.join(self._tmpdir, "stream.m3u8")
+        segment = os.path.join(self._tmpdir, "seg%03d.ts")
+
+        cmd = [
+            self._ffmpeg_bin(),
+            "-y",
+            # Windows desktop capture via GDI
+            "-f", "gdigrab",
+            "-framerate", str(framerate),
+            "-i", "desktop",
+            # ultrafast + zerolatency minimise encode delay for live capture
+            "-c:v", "libx264",
+            "-profile:v", "baseline",
+            "-level", "3.1",
+            "-preset", "ultrafast",
+            "-tune", "zerolatency",
+            # Shorter segments reduce end-to-end latency
+            "-f", "hls",
+            "-hls_time", "2",
             "-hls_list_size", "0",
             "-hls_flags", "independent_segments",
             "-hls_segment_filename", segment,
