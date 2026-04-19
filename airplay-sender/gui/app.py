@@ -1,7 +1,9 @@
 """Main GUI window built with customtkinter."""
 
 import asyncio
+import os
 import threading
+import tkinter as tk
 from tkinter import filedialog, simpledialog
 from typing import Dict, List, Optional
 
@@ -12,11 +14,15 @@ from pyatv.const import DeviceState
 
 from services.airplay import AirPlaySession, PinRequired
 from services.discovery import scan_devices
+from services.playlist import Playlist
 from services.streamer import HLSStreamer
 
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
+
+_ACTIVE_BTN = {"fg_color": "#1a73e8", "hover_color": "#1558b0"}
+_INACTIVE_BTN = {"fg_color": "gray35", "hover_color": "gray25"}
 
 
 def _fmt_time(seconds: int) -> str:
@@ -38,11 +44,12 @@ class App(ctk.CTk):
     def __init__(self, initial_file: Optional[str] = None):
         super().__init__()
         self.title("Win-AirPlay")
-        self.geometry("520x420")
+        self.geometry("520x640")
         self.resizable(False, False)
 
         self._devices: List[Dict[str, str]] = []
-        self._selected_video: Optional[str] = None
+        self._playlist = Playlist()
+        self._current_device: Optional[Dict[str, str]] = None
         self._streamer = HLSStreamer()
         self._session: Optional[AirPlaySession] = None
         self._playing = False
@@ -60,11 +67,10 @@ class App(ctk.CTk):
         self._setup_tray()
         self._schedule_scan()
 
+        self.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
+
         if initial_file:
             self.after(100, self.open_file, initial_file)
-
-        # Hide to tray on window close instead of quitting
-        self.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -78,42 +84,28 @@ class App(ctk.CTk):
         device_frame.pack(fill="x", **pad)
 
         ctk.CTkLabel(device_frame, text="Apple TV:", width=90, anchor="w").pack(side="left")
-
         self._device_var = ctk.StringVar(value="Scanning…")
         self._device_menu = ctk.CTkOptionMenu(
-            device_frame,
-            variable=self._device_var,
-            values=["Scanning…"],
-            width=280,
+            device_frame, variable=self._device_var, values=["Scanning…"], width=280,
         )
         self._device_menu.pack(side="left", padx=(0, 8))
+        ctk.CTkButton(device_frame, text="Rescan", width=70, command=self._schedule_scan).pack(side="left")
 
-        ctk.CTkButton(device_frame, text="Rescan", width=70, command=self._schedule_scan).pack(
-            side="left"
+        # Now playing row
+        np_frame = ctk.CTkFrame(self, fg_color="transparent")
+        np_frame.pack(fill="x", padx=16, pady=(0, 6))
+
+        ctk.CTkLabel(np_frame, text="Now playing:", width=90, anchor="w").pack(side="left")
+        self._now_playing_label = ctk.CTkLabel(
+            np_frame, text="—", anchor="w", width=400
         )
-
-        # File row
-        file_frame = ctk.CTkFrame(self, fg_color="transparent")
-        file_frame.pack(fill="x", **pad)
-
-        ctk.CTkLabel(file_frame, text="Video file:", width=90, anchor="w").pack(side="left")
-
-        self._file_label = ctk.CTkLabel(
-            file_frame, text="No file selected", anchor="w", width=280
-        )
-        self._file_label.pack(side="left", padx=(0, 8))
-
-        self._browse_btn = ctk.CTkButton(
-            file_frame, text="Browse", width=70, command=self._pick_file
-        )
-        self._browse_btn.pack(side="left")
+        self._now_playing_label.pack(side="left")
 
         # Mirror switch row
         mirror_frame = ctk.CTkFrame(self, fg_color="transparent")
         mirror_frame.pack(fill="x", padx=16, pady=(0, 4))
 
-        ctk.CTkLabel(mirror_frame, text="", width=90).pack(side="left")  # alignment spacer
-
+        ctk.CTkLabel(mirror_frame, text="", width=90).pack(side="left")
         self._mirror_switch = ctk.CTkSwitch(
             mirror_frame,
             text="Mirror screen  (streams your desktop to Apple TV)",
@@ -123,7 +115,7 @@ class App(ctk.CTk):
         )
         self._mirror_switch.pack(side="left")
 
-        # Transport controls: Play | Pause | Stop
+        # Transport controls
         ctrl_frame = ctk.CTkFrame(self, fg_color="transparent")
         ctrl_frame.pack(fill="x", **pad)
 
@@ -133,24 +125,16 @@ class App(ctk.CTk):
         self._play_btn.pack(side="left", padx=(71, 8))
 
         self._pause_btn = ctk.CTkButton(
-            ctrl_frame,
-            text="⏸  Pause",
-            width=110,
-            fg_color="gray40",
-            hover_color="gray30",
-            command=self._on_pause_resume,
-            state="disabled",
+            ctrl_frame, text="⏸  Pause", width=110,
+            fg_color="gray40", hover_color="gray30",
+            command=self._on_pause_resume, state="disabled",
         )
         self._pause_btn.pack(side="left", padx=(0, 8))
 
         self._stop_btn = ctk.CTkButton(
-            ctrl_frame,
-            text="■  Stop",
-            width=110,
-            fg_color="#c0392b",
-            hover_color="#922b21",
-            command=self._on_stop,
-            state="disabled",
+            ctrl_frame, text="■  Stop", width=110,
+            fg_color="#c0392b", hover_color="#922b21",
+            command=self._on_stop, state="disabled",
         )
         self._stop_btn.pack(side="left")
 
@@ -169,16 +153,72 @@ class App(ctk.CTk):
         self._time_label = ctk.CTkLabel(seek_frame, text="0:00 / 0:00", width=100, anchor="e")
         self._time_label.pack(side="left")
 
+        # ── Playlist panel ──────────────────────────────────────────────
+
+        playlist_outer = ctk.CTkFrame(self, corner_radius=8)
+        playlist_outer.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+
+        # Header: title + action buttons
+        hdr = ctk.CTkFrame(playlist_outer, fg_color="transparent")
+        hdr.pack(fill="x", padx=8, pady=(8, 4))
+
+        ctk.CTkLabel(hdr, text="Playlist", font=ctk.CTkFont(size=13, weight="bold")).pack(side="left")
+
+        for text, cmd in [
+            ("↓", self._on_playlist_down),
+            ("↑", self._on_playlist_up),
+            ("−", self._on_playlist_remove),
+            ("＋", self._on_playlist_add),
+        ]:
+            ctk.CTkButton(hdr, text=text, width=34, command=cmd).pack(side="right", padx=2)
+
+        # Listbox with scrollbar
+        lb_frame = tk.Frame(playlist_outer, bg="#2b2b2b")
+        lb_frame.pack(fill="both", expand=True, padx=8, pady=2)
+
+        scrollbar = tk.Scrollbar(lb_frame, orient="vertical")
+        scrollbar.pack(side="right", fill="y")
+
+        self._playlist_lb = tk.Listbox(
+            lb_frame,
+            bg="#2b2b2b",
+            fg="#e0e0e0",
+            selectbackground="#1a73e8",
+            selectforeground="white",
+            borderwidth=0,
+            highlightthickness=0,
+            activestyle="none",
+            font=("Segoe UI", 10),
+            yscrollcommand=scrollbar.set,
+        )
+        self._playlist_lb.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self._playlist_lb.yview)
+        self._playlist_lb.bind("<<ListboxSelect>>", self._on_lb_select)
+        self._playlist_lb.bind("<Double-Button-1>", self._on_lb_double_click)
+
+        # Shuffle / Loop toggles
+        toggle_row = ctk.CTkFrame(playlist_outer, fg_color="transparent")
+        toggle_row.pack(fill="x", padx=8, pady=(4, 8))
+
+        self._shuffle_btn = ctk.CTkButton(
+            toggle_row, text="⇄  Shuffle", width=110,
+            command=self._on_shuffle_toggle, **_INACTIVE_BTN,
+        )
+        self._shuffle_btn.pack(side="left", padx=(0, 8))
+
+        self._loop_btn = ctk.CTkButton(
+            toggle_row, text="↺  Loop", width=110,
+            command=self._on_loop_toggle, **_INACTIVE_BTN,
+        )
+        self._loop_btn.pack(side="left")
+
         # Status bar
         self._status_var = ctk.StringVar(value="Ready")
         ctk.CTkLabel(
-            self,
-            textvariable=self._status_var,
-            anchor="w",
-            height=28,
-            fg_color=("gray85", "gray20"),
-            corner_radius=6,
-        ).pack(fill="x", padx=16, pady=(4, 12))
+            self, textvariable=self._status_var,
+            anchor="w", height=28,
+            fg_color=("gray85", "gray20"), corner_radius=6,
+        ).pack(fill="x", padx=12, pady=(0, 10))
 
     # ------------------------------------------------------------------
     # System tray
@@ -249,34 +289,100 @@ class App(ctk.CTk):
         self._refresh_play_state()
 
     # ------------------------------------------------------------------
-    # File picker & mirror toggle
+    # Playlist management
     # ------------------------------------------------------------------
 
-    def _pick_file(self):
-        path = filedialog.askopenfilename(
-            title="Select video file",
+    def _on_playlist_add(self):
+        paths = filedialog.askopenfilenames(
+            title="Add files to playlist",
             filetypes=[
                 ("Video files", "*.mp4 *.mkv *.mov *.avi *.m4v *.wmv *.flv"),
                 ("All files", "*.*"),
             ],
         )
-        if path:
-            self._selected_video = path
-            short = path if len(path) <= 45 else "…" + path[-44:]
-            self._file_label.configure(text=short)
-            self._refresh_play_state()
+        for path in paths:
+            self._playlist.add(path)
+        self._update_playlist_display()
+        self._refresh_play_state()
+
+    def _on_playlist_remove(self):
+        sel = self._playlist_lb.curselection()
+        if not sel:
+            return
+        index = sel[0]
+        self._playlist.remove(index)
+        self._update_playlist_display()
+        self._refresh_play_state()
+
+    def _on_playlist_up(self):
+        sel = self._playlist_lb.curselection()
+        if not sel:
+            return
+        new_idx = self._playlist.move(sel[0], -1)
+        self._update_playlist_display()
+        self._playlist_lb.selection_set(new_idx)
+
+    def _on_playlist_down(self):
+        sel = self._playlist_lb.curselection()
+        if not sel:
+            return
+        new_idx = self._playlist.move(sel[0], +1)
+        self._update_playlist_display()
+        self._playlist_lb.selection_set(new_idx)
+
+    def _on_lb_select(self, _event):
+        sel = self._playlist_lb.curselection()
+        if sel and not self._playing:
+            self._playlist.select(sel[0])
+            self._update_now_playing()
+
+    def _on_lb_double_click(self, _event):
+        sel = self._playlist_lb.curselection()
+        if not sel:
+            return
+        index = sel[0]
+        if self._playing:
+            self._run_async(self._jump_to_track(index))
+        else:
+            self._playlist.select(index)
+            self._update_now_playing()
+            self._on_play()
+
+    def _on_shuffle_toggle(self):
+        self._playlist.shuffle = not self._playlist.shuffle
+        self._shuffle_btn.configure(**(
+            _ACTIVE_BTN if self._playlist.shuffle else _INACTIVE_BTN
+        ))
+
+    def _on_loop_toggle(self):
+        self._playlist.loop = not self._playlist.loop
+        self._loop_btn.configure(**(
+            _ACTIVE_BTN if self._playlist.loop else _INACTIVE_BTN
+        ))
+
+    def _update_playlist_display(self):
+        self._playlist_lb.delete(0, tk.END)
+        current = self._playlist.current_index
+        for i, path in enumerate(self._playlist.items):
+            prefix = "▶ " if i == current else "   "
+            self._playlist_lb.insert(tk.END, prefix + os.path.basename(path))
+        if 0 <= current < len(self._playlist):
+            self._playlist_lb.see(current)
+
+    def _update_now_playing(self):
+        name = self._playlist.display_name(self._playlist.current_index)
+        self._now_playing_label.configure(text=name or "—")
+
+    # ------------------------------------------------------------------
+    # Mirror toggle
+    # ------------------------------------------------------------------
 
     def _on_mirror_toggle(self):
         self._mirror_mode = self._mirror_switch.get()
         if self._mirror_mode:
-            self._browse_btn.configure(state="disabled")
-            self._file_label.configure(text="Desktop — screen capture")
+            self._now_playing_label.configure(text="Desktop — screen capture")
         else:
-            self._browse_btn.configure(state="normal")
-            label = self._selected_video or "No file selected"
-            if self._selected_video and len(self._selected_video) > 45:
-                label = "…" + self._selected_video[-44:]
-            self._file_label.configure(text=label)
+            self._update_now_playing()
         self._refresh_play_state()
 
     # ------------------------------------------------------------------
@@ -284,7 +390,7 @@ class App(ctk.CTk):
     # ------------------------------------------------------------------
 
     def _refresh_play_state(self):
-        source_ready = self._mirror_mode or bool(self._selected_video)
+        source_ready = self._mirror_mode or len(self._playlist) > 0
         device_ready = (
             bool(self._devices)
             and self._device_var.get() not in ("Scanning…", "No devices found")
@@ -300,10 +406,15 @@ class App(ctk.CTk):
         device = self._selected_device()
         if device is None:
             return
+        if not self._mirror_mode:
+            if not self._playlist.items:
+                return
+            if self._playlist.current_index < 0:
+                self._playlist.select(0)
+        self._current_device = device
         self._playing = True
         self._paused = False
         self._refresh_play_state()
-        self._set_status("Starting transcoder…")
         self._run_async(self._play_pipeline(device))
 
     async def _play_pipeline(self, device: Dict[str, str]):
@@ -312,11 +423,11 @@ class App(ctk.CTk):
                 self.after(0, self._set_status, "Starting screen capture…")
                 url = await self._streamer.start_mirror()
             else:
+                path = self._playlist.current
                 self.after(0, self._set_status, "Transcoding & starting HTTP server…")
-                url = await self._streamer.start(self._selected_video)
+                url = await self._streamer.start(path)
 
             self.after(0, self._set_status, f"Connecting to {device['name']}…")
-
             self._session = AirPlaySession()
 
             def pin_provider() -> str:
@@ -337,8 +448,13 @@ class App(ctk.CTk):
 
             await self._session.stream(url)
 
-            label = "Mirroring screen" if self._mirror_mode else f"Streaming to {device['name']}"
-            self.after(0, self._set_status, f"{label}…")
+            if self._mirror_mode:
+                self.after(0, self._set_status, "Mirroring screen…")
+            else:
+                name = os.path.basename(self._playlist.current)
+                self.after(0, self._set_status, f"Playing: {name}")
+                self.after(0, self._update_now_playing)
+                self.after(0, self._update_playlist_display)
 
             self._session.start_push_updates(
                 lambda ds, pos, dur: self.after(0, self._on_device_state, ds, pos, dur)
@@ -352,6 +468,69 @@ class App(ctk.CTk):
                 self._session = None
             self.after(0, self._set_status, f"Error: {exc}")
             self.after(0, self._reset_playing)
+
+    # ------------------------------------------------------------------
+    # Playlist auto-advance
+    # ------------------------------------------------------------------
+
+    async def _advance_and_play(self):
+        """Called when a track ends naturally — advance the playlist and stream next."""
+        if self._poll_task:
+            self._poll_task.cancel()
+            self._poll_task = None
+
+        await self._streamer.stop()
+
+        next_path = self._playlist.advance()
+        if next_path is None:
+            if self._session:
+                await self._session.stop()
+                self._session = None
+            self.after(0, self._reset_playing)
+            self.after(0, self._set_status, "Playlist finished.")
+            return
+
+        self.after(0, self._update_now_playing)
+        self.after(0, self._update_playlist_display)
+
+        try:
+            url = await self._streamer.start(next_path)
+            await self._session.stream(url)
+            self.after(0, self._set_status, f"Playing: {os.path.basename(next_path)}")
+            self._session.start_push_updates(
+                lambda ds, pos, dur: self.after(0, self._on_device_state, ds, pos, dur)
+            )
+            self._poll_task = asyncio.ensure_future(self._poll_position())
+        except Exception as exc:
+            if self._session:
+                self._session.close()
+                self._session = None
+            await self._streamer.stop()
+            self.after(0, self._set_status, f"Error: {exc}")
+            self.after(0, self._reset_playing)
+
+    async def _jump_to_track(self, index: int):
+        """Mid-playback: switch to a specific playlist index."""
+        if self._poll_task:
+            self._poll_task.cancel()
+            self._poll_task = None
+
+        await self._streamer.stop()
+        self._playlist.select(index)
+        path = self._playlist.current
+        self.after(0, self._update_now_playing)
+        self.after(0, self._update_playlist_display)
+
+        try:
+            url = await self._streamer.start(path)
+            await self._session.stream(url)
+            self.after(0, self._set_status, f"Playing: {os.path.basename(path)}")
+            self._session.start_push_updates(
+                lambda ds, pos, dur: self.after(0, self._on_device_state, ds, pos, dur)
+            )
+            self._poll_task = asyncio.ensure_future(self._poll_position())
+        except Exception as exc:
+            self.after(0, self._set_status, f"Error: {exc}")
 
     # ------------------------------------------------------------------
     # Pause / Resume
@@ -382,13 +561,15 @@ class App(ctk.CTk):
         self._pause_btn.configure(text="▶  Resume" if paused else "⏸  Pause")
 
     def _on_device_state(self, state: DeviceState, pos: int, dur: int) -> None:
-        """Handle push updates from the Apple TV (remote control, Siri, etc.)."""
         if state == DeviceState.Paused and not self._paused:
             self._set_paused_ui(True)
         elif state == DeviceState.Playing and self._paused:
             self._set_paused_ui(False)
         elif state in (DeviceState.Stopped, DeviceState.Idle) and self._playing:
-            self._on_stop()
+            if not self._mirror_mode and self._playlist.has_next():
+                self._run_async(self._advance_and_play())
+            else:
+                self._on_stop()
             return
         self._update_seek_bar(pos, dur)
 
@@ -456,7 +637,6 @@ class App(ctk.CTk):
         if self._poll_task:
             self._poll_task.cancel()
             self._poll_task = None
-
         try:
             await self._streamer.stop()
             if self._session:
@@ -475,7 +655,25 @@ class App(ctk.CTk):
         self._pause_btn.configure(text="⏸  Pause")
         self._seek_bar.set(0)
         self._time_label.configure(text="0:00 / 0:00")
+        self._update_playlist_display()
         self._refresh_play_state()
+
+    # ------------------------------------------------------------------
+    # Public API (IPC / context menu)
+    # ------------------------------------------------------------------
+
+    def open_file(self, path: str) -> None:
+        """Add a file to the playlist — called from CLI argument or IPC handoff."""
+        self._playlist.add(path)
+        self._update_playlist_display()
+        self._update_now_playing()
+        if self._mirror_switch.get():
+            self._mirror_switch.deselect()
+            self._on_mirror_toggle()
+        self._refresh_play_state()
+        self.deiconify()
+        self.lift()
+        self.focus_force()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -487,20 +685,6 @@ class App(ctk.CTk):
             if d["name"] == name:
                 return d
         return None
-
-    def open_file(self, path: str) -> None:
-        """Pre-select a video file — called from CLI argument or IPC handoff."""
-        self._selected_video = path
-        short = path if len(path) <= 45 else "…" + path[-44:]
-        self._file_label.configure(text=short)
-        # Turn off mirror mode if it was active
-        if self._mirror_switch.get():
-            self._mirror_switch.deselect()
-            self._on_mirror_toggle()
-        self._refresh_play_state()
-        self.deiconify()
-        self.lift()
-        self.focus_force()
 
     def _set_status(self, msg: str):
         self._status_var.set(msg)
