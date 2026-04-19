@@ -35,7 +35,7 @@ def _make_tray_image() -> Image.Image:
 
 
 class App(ctk.CTk):
-    def __init__(self):
+    def __init__(self, initial_file: Optional[str] = None):
         super().__init__()
         self.title("Win-AirPlay")
         self.geometry("520x420")
@@ -59,6 +59,9 @@ class App(ctk.CTk):
         self._start_bg_loop()
         self._setup_tray()
         self._schedule_scan()
+
+        if initial_file:
+            self.after(100, self.open_file, initial_file)
 
         # Hide to tray on window close instead of quitting
         self.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
@@ -484,6 +487,20 @@ class App(ctk.CTk):
             if d["name"] == name:
                 return d
         return None
+
+    def open_file(self, path: str) -> None:
+        """Pre-select a video file — called from CLI argument or IPC handoff."""
+        self._selected_video = path
+        short = path if len(path) <= 45 else "…" + path[-44:]
+        self._file_label.configure(text=short)
+        # Turn off mirror mode if it was active
+        if self._mirror_switch.get():
+            self._mirror_switch.deselect()
+            self._on_mirror_toggle()
+        self._refresh_play_state()
+        self.deiconify()
+        self.lift()
+        self.focus_force()
 
     def _set_status(self, msg: str):
         self._status_var.set(msg)

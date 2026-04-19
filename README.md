@@ -76,6 +76,24 @@ Clicking the window's close button hides the app to the system tray rather than 
 | Stop Playback | Stop the current stream |
 | Quit | Stop playback and exit |
 
+### Right-click context menu
+
+After building the `.exe`, register a Windows Explorer context menu entry so you can right-click any video file and choose **AirPlay to Apple TV**:
+
+```bash
+python scripts/register_context_menu.py install
+# or point explicitly:
+python scripts/register_context_menu.py install "C:\path\to\WinAirPlay.exe"
+```
+
+To remove it:
+
+```bash
+python scripts/register_context_menu.py uninstall
+```
+
+No administrator rights are required — entries are written to `HKCU`. If Win-AirPlay is already running in the tray, right-clicking a file will bring its window to the front with that file pre-selected rather than launching a second instance.
+
 ---
 
 ## How it works
