@@ -1,25 +1,58 @@
 """
 Downloads the latest ffmpeg Windows static build (BtbN GitHub release) and
-extracts ffmpeg.exe into the airplay-sender/ directory ready for PyInstaller.
+extracts ffmpeg.exe into a target directory.
 
-Usage:
+Can be run standalone:
     python scripts/get_ffmpeg.py
+
+Or imported and called programmatically:
+    from scripts.get_ffmpeg import ensure_ffmpeg
+    ffmpeg_path = ensure_ffmpeg(dest_dir, progress_cb=lambda pct: ...)
 """
 
 import io
+import json
 import os
 import sys
 import urllib.request
 import zipfile
+from typing import Callable, Optional
 
-# BtbN publishes nightly static Windows builds on GitHub.
-# The 'latest' redirect always points to the most recent release.
 RELEASE_API = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest"
 ASSET_SUFFIX = "ffmpeg-master-latest-win64-gpl.zip"
 
-DEST_DIR = os.path.join(os.path.dirname(__file__), "..")  # airplay-sender/
-DEST = os.path.join(DEST_DIR, "ffmpeg.exe")
+# Default destination: airplay-sender/ (parent of scripts/)
+_DEFAULT_DEST_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 
+
+def ensure_ffmpeg(
+    dest_dir: str = _DEFAULT_DEST_DIR,
+    progress_cb: Optional[Callable[[int], None]] = None,
+) -> str:
+    """Return the path to ffmpeg.exe, downloading it first if necessary.
+
+    *progress_cb* is called with an integer 0-100 during the download.
+    """
+    dest = os.path.join(dest_dir, "ffmpeg.exe")
+    if os.path.isfile(dest):
+        return dest
+
+    url = _find_asset_url()
+    data = _download(url, progress_cb)
+
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        candidates = [n for n in zf.namelist() if n.endswith("/bin/ffmpeg.exe")]
+        if not candidates:
+            raise RuntimeError("ffmpeg.exe not found inside the downloaded archive.")
+        with zf.open(candidates[0]) as src, open(dest, "wb") as dst:
+            dst.write(src.read())
+
+    return dest
+
+
+# ---------------------------------------------------------------------------
+# Internals
+# ---------------------------------------------------------------------------
 
 def _find_asset_url() -> str:
     req = urllib.request.Request(
@@ -27,7 +60,6 @@ def _find_asset_url() -> str:
         headers={"Accept": "application/vnd.github+json", "User-Agent": "win-airplay-setup"},
     )
     with urllib.request.urlopen(req) as resp:
-        import json
         data = json.load(resp)
 
     for asset in data.get("assets", []):
@@ -36,14 +68,12 @@ def _find_asset_url() -> str:
 
     raise RuntimeError(
         f"Could not find asset ending with '{ASSET_SUFFIX}' in the latest release.\n"
-        "Check https://github.com/BtbN/FFmpeg-Builds/releases for current filenames."
+        "Check https://github.com/BtbN/FFmpeg-Builds/releases for available filenames."
     )
 
 
-def _download(url: str) -> bytes:
-    print(f"Downloading {url}")
+def _download(url: str, progress_cb: Optional[Callable[[int], None]]) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": "win-airplay-setup"})
-
     with urllib.request.urlopen(req) as resp:
         total = int(resp.headers.get("Content-Length", 0))
         downloaded = 0
@@ -54,39 +84,25 @@ def _download(url: str) -> bytes:
                 break
             chunks.append(chunk)
             downloaded += len(chunk)
-            if total:
-                pct = downloaded * 100 // total
-                print(f"\r  {pct:3d}%  {downloaded // 1_048_576} / {total // 1_048_576} MB", end="", flush=True)
-        print()
-        return b"".join(chunks)
+            if progress_cb and total:
+                progress_cb(downloaded * 100 // total)
+    return b"".join(chunks)
 
 
-def main():
-    if os.path.isfile(DEST):
-        print(f"ffmpeg.exe already present at {os.path.abspath(DEST)} — nothing to do.")
-        return
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
 
-    print("Fetching latest release metadata from BtbN/FFmpeg-Builds …")
-    url = _find_asset_url()
-
-    data = _download(url)
-
-    print("Extracting ffmpeg.exe …")
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        # The zip contains a top-level folder; ffmpeg.exe is in its bin/ subdirectory.
-        candidates = [n for n in zf.namelist() if n.endswith("/bin/ffmpeg.exe")]
-        if not candidates:
-            raise RuntimeError("ffmpeg.exe not found in the downloaded zip.")
-
-        with zf.open(candidates[0]) as src, open(DEST, "wb") as dst:
-            dst.write(src.read())
-
-    print(f"Done — ffmpeg.exe written to {os.path.abspath(DEST)}")
+def _cli():
+    dest = ensure_ffmpeg(
+        progress_cb=lambda pct: print(f"\r  {pct:3d}%", end="", flush=True)
+    )
+    print(f"\nDone — {dest}")
 
 
 if __name__ == "__main__":
     try:
-        main()
+        _cli()
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)

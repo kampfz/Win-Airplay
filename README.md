@@ -32,10 +32,10 @@ Pick a file, pick a device, hit Play — ffmpeg transcodes on the fly while a lo
 git clone https://github.com/kampfz/Win-Airplay.git
 cd Win-Airplay/airplay-sender
 pip install -r requirements.txt
-python scripts/get_ffmpeg.py
+python main.py
 ```
 
-`get_ffmpeg.py` downloads the latest Windows static ffmpeg build from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds/releases) and extracts `ffmpeg.exe` into `airplay-sender/`. It is a no-op if the file already exists.
+On the very first launch, a small progress dialog appears and downloads the latest Windows static ffmpeg build from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds/releases) into `airplay-sender/ffmpeg.exe`. Subsequent launches skip this step entirely. No manual ffmpeg install is needed.
 
 ---
 
@@ -81,10 +81,10 @@ ffmpeg  ──►  HLS segments (.ts) + playlist (.m3u8)  in a temp dir
 
 ## Building a standalone .exe
 
-ffmpeg is bundled automatically into the exe. Run the setup script first if you haven't already, then build:
+ffmpeg is bundled automatically into the exe. Launch the app once first so it downloads `ffmpeg.exe`, then build:
 
 ```bash
-python scripts/get_ffmpeg.py   # downloads ffmpeg.exe if not present
+python main.py                 # downloads ffmpeg.exe on first run, then quit
 pip install pyinstaller
 pyinstaller airplay-sender/build.spec
 ```
