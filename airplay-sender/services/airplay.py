@@ -4,7 +4,7 @@ import asyncio
 from typing import Callable, Optional
 
 import pyatv
-from pyatv.const import Protocol
+from pyatv.const import DeviceState, Protocol
 from pyatv.interface import PairingHandler
 
 
@@ -12,6 +12,23 @@ class PinRequired(Exception):
     def __init__(self, pairing: PairingHandler):
         self.pairing = pairing
         super().__init__("Pairing PIN required")
+
+
+class _PushListener:
+    """Duck-typed pyatv push listener that forwards state changes to a callback."""
+
+    def __init__(self, callback: Callable[[DeviceState, int, int], None]):
+        self._cb = callback
+
+    def playstatus_update(self, _updater, playing) -> None:
+        self._cb(
+            playing.device_state,
+            playing.position or 0,
+            playing.total_time or 0,
+        )
+
+    def playstatus_error(self, _updater, _exception) -> None:
+        pass
 
 
 class AirPlaySession:
@@ -52,6 +69,11 @@ class AirPlaySession:
                 raise RuntimeError("Pairing failed. Check the PIN and try again.")
 
         self._atv = await pyatv.connect(conf, loop)
+
+    def start_push_updates(self, callback: Callable[[DeviceState, int, int], None]) -> None:
+        """Register *callback(device_state, position, duration)* for Apple TV remote events."""
+        self._atv.push_updater.listener = _PushListener(callback)
+        self._atv.push_updater.start()
 
     async def stream(self, url: str) -> None:
         await self._atv.stream.stream_file(url)

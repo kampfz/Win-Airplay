@@ -7,6 +7,8 @@ from typing import Dict, List, Optional
 
 import customtkinter as ctk
 
+from pyatv.const import DeviceState
+
 from services.airplay import AirPlaySession, PinRequired
 from services.discovery import scan_devices
 from services.streamer import HLSStreamer
@@ -257,6 +259,9 @@ class App(ctk.CTk):
             await self._session.stream(url)
             self.after(0, self._set_status, f"Streaming to {device['name']}…")
 
+            self._session.start_push_updates(
+                lambda ds, pos, dur: self.after(0, self._on_device_state, ds, pos, dur)
+            )
             self._poll_task = asyncio.ensure_future(self._poll_position())
 
         except Exception as exc:
@@ -294,6 +299,17 @@ class App(ctk.CTk):
     def _set_paused_ui(self, paused: bool):
         self._paused = paused
         self._pause_btn.configure(text="▶  Resume" if paused else "⏸  Pause")
+
+    def _on_device_state(self, state: DeviceState, pos: int, dur: int) -> None:
+        """Handle push updates from the Apple TV (remote control, Siri, etc.)."""
+        if state == DeviceState.Paused and not self._paused:
+            self._set_paused_ui(True)
+        elif state == DeviceState.Playing and self._paused:
+            self._set_paused_ui(False)
+        elif state in (DeviceState.Stopped, DeviceState.Idle) and self._playing:
+            self._on_stop()
+            return
+        self._update_seek_bar(pos, dur)
 
     # ------------------------------------------------------------------
     # Seek bar
