@@ -60,6 +60,7 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self._duration = 0
         self._poll_task = None
         self._mirror_mode = False
+        self._drag_start: Optional[int] = None
         self._tray: Optional[pystray.Icon] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -198,6 +199,9 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         scrollbar.config(command=self._playlist_lb.yview)
         self._playlist_lb.bind("<<ListboxSelect>>", self._on_lb_select)
         self._playlist_lb.bind("<Double-Button-1>", self._on_lb_double_click)
+        self._playlist_lb.bind("<Button-1>", self._on_lb_drag_start)
+        self._playlist_lb.bind("<B1-Motion>", self._on_lb_drag_motion)
+        self._playlist_lb.bind("<ButtonRelease-1>", self._on_lb_drag_release)
         self._playlist_lb.drop_target_register(DND_FILES)
         self._playlist_lb.dnd_bind("<<Drop>>", self._on_dnd_drop)
 
@@ -359,10 +363,39 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         self._playlist_lb.selection_set(new_idx)
 
     def _on_lb_select(self, _event):
+        if self._drag_start is not None:
+            return  # selection changes during drag are visual only
         sel = self._playlist_lb.curselection()
         if sel and not self._playing:
             self._playlist.select(sel[0])
             self._update_now_playing()
+
+    def _on_lb_drag_start(self, event):
+        idx = self._playlist_lb.nearest(event.y)
+        if idx >= 0:
+            self._drag_start = idx
+
+    def _on_lb_drag_motion(self, event):
+        if self._drag_start is None:
+            return
+        self._playlist_lb.configure(cursor="fleur")
+        target = max(0, min(len(self._playlist) - 1, self._playlist_lb.nearest(event.y)))
+        self._playlist_lb.selection_clear(0, tk.END)
+        self._playlist_lb.selection_set(target)
+
+    def _on_lb_drag_release(self, event):
+        self._playlist_lb.configure(cursor="")
+        if self._drag_start is None:
+            return
+        start = self._drag_start
+        self._drag_start = None
+        target = max(0, min(len(self._playlist) - 1, self._playlist_lb.nearest(event.y)))
+        if target == start:
+            return  # plain click — leave normal select in place
+        self._playlist.move(start, target - start)
+        self._update_playlist_display()
+        self._playlist_lb.selection_set(target)
+        self._refresh_play_state()
 
     def _on_lb_double_click(self, _event):
         sel = self._playlist_lb.curselection()
