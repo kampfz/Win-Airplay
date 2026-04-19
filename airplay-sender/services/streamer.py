@@ -5,6 +5,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 from typing import Optional
 
@@ -56,12 +57,22 @@ class HLSStreamer:
     # Internals
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _ffmpeg_bin() -> str:
+        # When running from a PyInstaller bundle, ffmpeg.exe is extracted
+        # alongside the exe in sys._MEIPASS; fall back to PATH otherwise.
+        if hasattr(sys, "_MEIPASS"):
+            candidate = os.path.join(sys._MEIPASS, "ffmpeg.exe")
+            if os.path.isfile(candidate):
+                return candidate
+        return "ffmpeg"
+
     def _start_ffmpeg(self, video_path: str):
         playlist = os.path.join(self._tmpdir, "stream.m3u8")
         segment = os.path.join(self._tmpdir, "seg%03d.ts")
 
         cmd = [
-            "ffmpeg",
+            self._ffmpeg_bin(),
             "-y",
             "-i", video_path,
             # Video: H.264 baseline for maximum Apple TV compatibility

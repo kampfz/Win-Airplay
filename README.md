@@ -77,14 +77,23 @@ ffmpeg  ──►  HLS segments (.ts) + playlist (.m3u8)  in a temp dir
 
 ## Building a standalone .exe
 
-Place `ffmpeg.exe` next to `main.py`, uncomment the `binaries` line in `build.spec`, then run:
+ffmpeg is bundled automatically. Before building, download a Windows ffmpeg binary and place `ffmpeg.exe` in the `airplay-sender/` directory next to `build.spec`:
+
+```
+airplay-sender/
+├── ffmpeg.exe   ← put it here
+├── build.spec
+└── main.py
+```
+
+Then build:
 
 ```bash
 pip install pyinstaller
 pyinstaller airplay-sender/build.spec
 ```
 
-The output is `dist/WinAirPlay.exe` — a single file with no external dependencies.
+The output is `dist/WinAirPlay.exe`. ffmpeg is embedded inside it — no separate install needed on the target machine.
 
 ---
 

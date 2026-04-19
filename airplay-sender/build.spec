@@ -10,8 +10,8 @@ a = Analysis(
     ["main.py"],
     pathex=[],
     binaries=[
-        # Bundle ffmpeg.exe if placed next to main.py
-        # ("ffmpeg.exe", "."),
+        # ffmpeg.exe must be placed next to build.spec before building
+        ("ffmpeg.exe", "."),
     ],
     datas=[
         # customtkinter ships its own theme assets
