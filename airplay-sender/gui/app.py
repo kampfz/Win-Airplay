@@ -11,6 +11,7 @@ import customtkinter as ctk
 import pystray
 from PIL import Image, ImageDraw
 from pyatv.const import DeviceState
+from tkinterdnd2 import DND_FILES, TkinterDnD
 
 from services.airplay import AirPlaySession, PinRequired
 from services.discovery import scan_devices
@@ -40,7 +41,7 @@ def _make_tray_image() -> Image.Image:
     return img
 
 
-class App(ctk.CTk):
+class App(ctk.CTk, TkinterDnD.DnDWrapper):
     def __init__(self, initial_file: Optional[str] = None):
         super().__init__()
         self.title("Win-AirPlay")
@@ -61,6 +62,8 @@ class App(ctk.CTk):
         self._mirror_mode = False
         self._tray: Optional[pystray.Icon] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+        self.TkdndVersion = TkinterDnD._require(self)
 
         self._build_ui()
         self._start_bg_loop()
@@ -195,6 +198,8 @@ class App(ctk.CTk):
         scrollbar.config(command=self._playlist_lb.yview)
         self._playlist_lb.bind("<<ListboxSelect>>", self._on_lb_select)
         self._playlist_lb.bind("<Double-Button-1>", self._on_lb_double_click)
+        self._playlist_lb.drop_target_register(DND_FILES)
+        self._playlist_lb.dnd_bind("<<Drop>>", self._on_dnd_drop)
 
         # Shuffle / Loop toggles
         toggle_row = ctk.CTkFrame(playlist_outer, fg_color="transparent")
@@ -304,6 +309,29 @@ class App(ctk.CTk):
             self._playlist.add(path)
         self._update_playlist_display()
         self._refresh_play_state()
+
+    def _on_dnd_drop(self, event):
+        # tkinterdnd2 returns paths as a Tcl list string, e.g. {/path/to/file} or
+        # multiple paths separated by spaces with braces around paths that have spaces.
+        raw = event.data
+        # Use Tk's splitlist to correctly handle spaces and braces.
+        try:
+            paths = self.tk.splitlist(raw)
+        except Exception:
+            paths = raw.split()
+
+        video_exts = {".mp4", ".mkv", ".mov", ".avi", ".m4v", ".wmv", ".flv", ".ts", ".m2ts"}
+        added = 0
+        for path in paths:
+            if os.path.isfile(path) and os.path.splitext(path)[1].lower() in video_exts:
+                self._playlist.add(path)
+                added += 1
+
+        if added:
+            self._update_playlist_display()
+            self._update_now_playing()
+            self._refresh_play_state()
+            self._set_status(f"Added {added} file(s) to playlist.")
 
     def _on_playlist_remove(self):
         sel = self._playlist_lb.curselection()
