@@ -221,13 +221,15 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper):
         )
         self._loop_btn.pack(side="left")
 
-        # Status bar
+        # Status bar — read-only entry so the text is selectable/copyable
         self._status_var = ctk.StringVar(value="Ready")
-        ctk.CTkLabel(
+        self._status_entry = ctk.CTkEntry(
             self, textvariable=self._status_var,
-            anchor="w", height=28,
-            fg_color=("gray85", "gray20"), corner_radius=6,
-        ).pack(fill="x", padx=12, pady=(0, 10))
+            height=28, fg_color=("gray85", "gray20"),
+            border_width=0, corner_radius=6,
+            state="readonly",
+        )
+        self._status_entry.pack(fill="x", padx=12, pady=(0, 10))
 
     # ------------------------------------------------------------------
     # System tray

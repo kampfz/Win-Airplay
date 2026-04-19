@@ -16,6 +16,7 @@ class HLSStreamer:
     def __init__(self):
         self._tmpdir: Optional[str] = None
         self._ffmpeg_proc: Optional[subprocess.Popen] = None
+        self._ffmpeg_stderr = None
         self._runner: Optional[web.AppRunner] = None
         self._port: int = 0
 
@@ -55,6 +56,10 @@ class HLSStreamer:
             except subprocess.TimeoutExpired:
                 self._ffmpeg_proc.kill()
         self._ffmpeg_proc = None
+
+        if self._ffmpeg_stderr:
+            self._ffmpeg_stderr.close()
+            self._ffmpeg_stderr = None
 
         if self._runner:
             await self._runner.cleanup()
@@ -125,6 +130,7 @@ class HLSStreamer:
             "-c:v", "libx264",
             "-profile:v", "baseline",
             "-level", "3.1",
+            "-pix_fmt", "yuv420p",
             "-preset", "ultrafast",
             "-tune", "zerolatency",
             # Shorter segments reduce end-to-end latency
@@ -136,10 +142,11 @@ class HLSStreamer:
             playlist,
         ]
 
+        self._ffmpeg_stderr = open(os.path.join(self._tmpdir, "ffmpeg.log"), "w")
         self._ffmpeg_proc = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=self._ffmpeg_stderr,
         )
 
     async def _wait_for_playlist(self, timeout: float = 30.0):
@@ -148,13 +155,26 @@ class HLSStreamer:
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
             if os.path.exists(playlist) and os.path.getsize(playlist) > 0:
-                # Playlist exists; make sure at least one .ts segment is referenced
                 with open(playlist) as f:
                     if ".ts" in f.read():
                         return
             if asyncio.get_event_loop().time() > deadline:
-                raise TimeoutError("ffmpeg did not produce HLS output in time.")
+                log_tail = self._read_ffmpeg_log_tail()
+                raise TimeoutError(
+                    f"ffmpeg did not produce HLS output in time. {log_tail}"
+                )
             await asyncio.sleep(0.5)
+
+    def _read_ffmpeg_log_tail(self, lines: int = 5) -> str:
+        try:
+            if self._ffmpeg_stderr:
+                self._ffmpeg_stderr.flush()
+            log_path = os.path.join(self._tmpdir, "ffmpeg.log")
+            with open(log_path) as f:
+                tail = f.readlines()[-lines:]
+            return "".join(tail).strip()
+        except Exception:
+            return ""
 
     async def _start_http_server(self):
         app = web.Application()
