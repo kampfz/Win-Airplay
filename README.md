@@ -20,8 +20,9 @@ Pick a file, pick a device, hit Play — ffmpeg transcodes on the fly while a lo
 
 - Windows 10/11 (or macOS/Linux for development)
 - Python 3.10+
-- [ffmpeg](https://ffmpeg.org/download.html) installed and on your `PATH`
 - Apple TV on the same local network
+
+> ffmpeg is downloaded automatically by the setup script (see below). You do not need to install it manually.
 
 ---
 
@@ -31,7 +32,10 @@ Pick a file, pick a device, hit Play — ffmpeg transcodes on the fly while a lo
 git clone https://github.com/kampfz/Win-Airplay.git
 cd Win-Airplay/airplay-sender
 pip install -r requirements.txt
+python scripts/get_ffmpeg.py
 ```
+
+`get_ffmpeg.py` downloads the latest Windows static ffmpeg build from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds/releases) and extracts `ffmpeg.exe` into `airplay-sender/`. It is a no-op if the file already exists.
 
 ---
 
@@ -77,18 +81,10 @@ ffmpeg  ──►  HLS segments (.ts) + playlist (.m3u8)  in a temp dir
 
 ## Building a standalone .exe
 
-ffmpeg is bundled automatically. Before building, download a Windows ffmpeg binary and place `ffmpeg.exe` in the `airplay-sender/` directory next to `build.spec`:
-
-```
-airplay-sender/
-├── ffmpeg.exe   ← put it here
-├── build.spec
-└── main.py
-```
-
-Then build:
+ffmpeg is bundled automatically into the exe. Run the setup script first if you haven't already, then build:
 
 ```bash
+python scripts/get_ffmpeg.py   # downloads ffmpeg.exe if not present
 pip install pyinstaller
 pyinstaller airplay-sender/build.spec
 ```
@@ -109,7 +105,7 @@ The output is `dist/WinAirPlay.exe`. ffmpeg is embedded inside it — no separat
 - Delete any stale credentials stored by pyatv and try again.
 
 **Video won't play / black screen**
-- Verify ffmpeg is on your `PATH`: `ffmpeg -version`
+- Re-run `python scripts/get_ffmpeg.py` to ensure `ffmpeg.exe` is present.
 - Check that the source file isn't DRM-protected.
 
 **Buffering / poor quality**
